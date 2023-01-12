@@ -37,15 +37,15 @@ programs:
     numprocs: 1
     umask: 077
     workingdir: /home/user42
-    autostart: true
+    autostart: false
     autorestart: true
     exitcodes: 0
     startretries: 2
     starttime: 2
     stopsignal: SIGUSR1
     stoptime: 4
-    stdout: /tmp/beta.stdout
-    stderr: /tmp/beta.stderr
+    stdout: /tmp/delta.stdout
+    stderr: /tmp/delta.stderr
   daemon_EPSILON:
     cmd: "/home/user42/42/taskmaster/test/daemons/daemon_EPSILON bla1 bla2"
     numprocs: 1
@@ -56,7 +56,7 @@ programs:
     exitcodes: 0
     startretries: 2
     starttime: 8
-    stopsignal: SIGUSR1
+    stopsignal: SIGTERM
     stoptime: 2
-    stdout: /tmp/beta.stdout
-    stderr: /tmp/beta.stderr
+    stdout: /tmp/epsilon.stdout
+    stderr: /tmp/epsilon.stderr

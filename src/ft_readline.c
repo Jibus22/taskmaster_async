@@ -522,9 +522,6 @@ static int32_t rl_process_key(t_readline_state *rl) {
     case ENTER:
       goto rl_return;
 
-    case CTRL_KEY('q'):
-      goto rl_exit;
-      break;
 
     case CTRL_KEY('c'):
       /* TODO */
@@ -553,6 +550,7 @@ static int32_t rl_process_key(t_readline_state *rl) {
       rl_delete_line(rl);
       break;
 
+    case CTRL_KEY('q'):
     case CTRL_KEY('g'):
     case CTRL_KEY('j'):
     case CTRL_KEY('k'):
@@ -651,7 +649,6 @@ char *ft_readline(const char *prompt) {
   }
 
   disable_raw_mode();
-  printf("\n");
-  if (run < 0) return NULL;
-  return strdup(buf);
+  write(STDOUT_FILENO, "\n", 1);
+  return (run < 0) ? NULL : strdup(buf);
 }

@@ -70,12 +70,32 @@ typedef struct s_pgm_usr {
                               killed. in ms*/
 } t_pgm_usr;
 
+typedef struct s_process {
+  pid_t pid;           /* processus pid */
+  int32_t restart_cnt; /* how many times the processus restarted */
+  int32_t w_status;    /* waitpid() status of processus */
+  int32_t updated; /* flag to notify wether the proc has been updated or not */
+  struct s_process *next;
+} t_process;
+
+typedef enum e_pgm_event {
+  PGM_NO_EV,
+  PGM_EV_RESTART,
+  PGM_EV_EXIT,
+  PGM_MAX_EV,
+} t_pgm_event;
+
 /* data of a program dynamically filled at runtime for taskmaster operations */
 typedef struct s_pgm_private {
   struct log {
     int32_t out; /* fd for logging out */
     int32_t err; /* fd for logging err */
   } log;
+  pid_t pgid;       /* process group id */
+  int32_t updated;  /* notify wether the pgm had been updated or not */
+  t_pgm_event ev;   /* event affected to the pgm */
+  int32_t proc_cnt; /* count of active processus */
+  t_process *proc_head;
   struct s_pgm *next; /* next link of the linked list */
 } t_pgm_private;
 
@@ -90,6 +110,8 @@ typedef struct s_tm_node {
   FILE *config_file; /* configuration file */
   t_pgm *head;       /* head of list of programs */
   uint32_t pgm_nb;   /* number of programs */
+  pid_t shell_pgid;  /* shell pgid */
+  int32_t exit;      /* exit taskmaster if true */
 } t_tm_node;
 
 /* parsing.c */

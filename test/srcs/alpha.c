@@ -29,7 +29,7 @@ int main(int ac, char **av, char **env) {
       len_err = sprintf(msg_err, "[%-6d] - %-8s - STDERR - RUNNING\n", pid,
 			DAEMON_NAME);
 
-  signal(SIGTERM, handler);
+  /* signal(SIGTERM, handler); */
 
   write(STDOUT_FILENO, msg_out, len_out);
   write(STDERR_FILENO, msg_err, len_err);

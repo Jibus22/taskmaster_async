@@ -1,5 +1,8 @@
-#include "taskmaster.h"
 #include <errno.h>
+#include <signal.h>
+#include <termio.h>
+
+#include "taskmaster.h"
 
 static uint8_t usage(char *const *av) {
   fprintf(stderr, "Usage: %s [-f filename]\n", av[0]);
@@ -28,6 +31,52 @@ static uint8_t get_options(int ac, char *const *av, t_tm_node *node) {
   return EXIT_SUCCESS;
 }
 
+/* Ignore interactive and job-control signals. */
+static void ignore_interactive_sig() {
+  struct sigaction act;
+
+  act.sa_handler = SIG_IGN;
+  sigemptyset(&act.sa_mask);
+  act.sa_flags = 0;
+  sigaction(SIGINT, &act, NULL);
+  sigaction(SIGQUIT, &act, NULL);
+  sigaction(SIGTSTP, &act, NULL);
+  sigaction(SIGTTIN, &act, NULL);
+  sigaction(SIGTTOU, &act, NULL);
+  sigaction(SIGCHLD, &act, NULL);
+}
+
+/* make sure taskmaster is in foreground before continuing */
+static int32_t init_shell(t_tm_node *node) {
+  struct termios shell_tmodes;
+  /* See if we are running interactively. */
+  int32_t shell_terminal = STDIN_FILENO,
+          shell_is_interactive = isatty(shell_terminal);
+
+  if (shell_is_interactive) {
+    /* Loop until we are in the foreground. */
+    while (tcgetpgrp(shell_terminal) != (node->shell_pgid = getpgrp()))
+      kill(-node->shell_pgid, SIGTTIN);
+
+    ignore_interactive_sig();
+
+    node->shell_pgid = getpid(); /* Put ourselves in our own process group. */
+    if (setpgid(node->shell_pgid, node->shell_pgid) < 0)
+      goto_error("Couldn't put the shell in its own process group");
+
+    /* Grab control of the terminal. */
+    tcsetpgrp(shell_terminal, node->shell_pgid);
+    /* Save default terminal attributes for shell. */
+    tcgetattr(shell_terminal, &shell_tmodes);
+    return EXIT_SUCCESS;
+  } else
+    fprintf(stderr, "%s: can't be launched in non-interactive mode\n",
+            node->tm_name);
+error:
+  destroy_taskmaster(node);
+  return EXIT_FAILURE;
+}
+
 int main(int ac, char **av) {
   t_tm_node node = {.tm_name = av[0], 0};
 
@@ -35,6 +84,7 @@ int main(int ac, char **av) {
   if (load_config_file(&node)) return EXIT_FAILURE;
   if (sanitize_config(&node)) return EXIT_FAILURE;
   if (fulfill_config(&node)) return EXIT_FAILURE;
+  if (init_shell(&node)) return EXIT_FAILURE;
   /* run_server(&node) */
   run_client(&node);
   print_pgm_list(node.head);
