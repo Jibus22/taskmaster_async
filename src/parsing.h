@@ -67,7 +67,7 @@ typedef enum e_parsing_info_mask {
 #define SAN_STARTTIME_MAX (120) /* in seconds */
 #define SAN_STOPTIME_MAX (60)   /* in seconds */
 
-#define LOGFILE_PERM (0755)
+#define LOGFILE_PERM (0644)
 
 #define ERR_TYPE_BUF_SIZE (32)
 #define ERR_MSG_BUF_SIZE (256)

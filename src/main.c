@@ -85,7 +85,6 @@ int main(int ac, char **av) {
   if (sanitize_config(&node)) return EXIT_FAILURE;
   if (fulfill_config(&node)) return EXIT_FAILURE;
   if (init_shell(&node)) return EXIT_FAILURE;
-  /* run_server(&node) */
   run_client(&node);
   print_pgm_list(node.head);
   destroy_taskmaster(&node);

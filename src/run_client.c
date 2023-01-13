@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
+#include "ft_log.h"
 #include "ft_readline.h"
 
 /* Debugging macro. */
@@ -26,7 +27,24 @@ void close_debugfile(void) {
 #define client_debug(...)
 #endif
 
+/* ================================= getters ================================ */
+
+/* initialize & record node in a static pointer at the first call
+ * and get its address on subsequent calls */
+static t_tm_node *get_node(t_tm_node *node) {
+    static bool init = false;
+    static t_tm_node *my_node = NULL;
+
+    if (!init) {
+        init = true;
+        my_node = node;
+    }
+    return my_node;
+}
+
 /* =============================== initialization =========================== */
+
+static void log_exit() { ft_log(FT_LOG_INFO, "exited"); }
 
 static void *destroy_str_array(char **array, uint32_t sz) {
     while (--sz >= 0) {
@@ -170,19 +188,6 @@ static void format_user_input(char *line) {
     }
 }
 
-/* ================================= getters ================================ */
-
-static t_tm_node *get_node(t_tm_node *node) {
-    static bool init = false;
-    static t_tm_node *my_node = NULL;
-
-    if (!init) {
-        init = true;
-        my_node = node;
-    }
-    return my_node;
-}
-
 /* ============================== lists processors ========================== */
 
 typedef int32_t (*t_handle)(t_pgm *pgm, const void *arg);
@@ -281,6 +286,8 @@ static void launch_new_proc(t_pgm *pgm) {
     if (!pgm->privy.pgid) pgm->privy.pgid = cpid;
     setpgid(cpid, pgm->privy.pgid);
     pgm->privy.proc_cnt++;
+    ft_log(FT_LOG_INFO, "(%d) %s <%d> started", pgm->privy.pgid, pgm->usr.name,
+           pgm->privy.proc_head->pid);
     client_debug("new: gpid:%d, pid:%d\n", getpgid(cpid), cpid);
 }
 
@@ -290,6 +297,8 @@ static int32_t delete_proc(t_pgm *pgm, t_process *last,
                            t_process **current_proc) {
     t_process *current = *current_proc;
 
+    ft_log(FT_LOG_INFO, "(%d) %s <%d> terminated", pgm->privy.pgid,
+           pgm->usr.name, current->pid);
     if (last) {
         last->next = current->next;
         *current_proc = last;
@@ -316,6 +325,8 @@ static void restart_proc(t_pgm *pgm, t_process *proc) {
     if (cpid) update_proc_data(proc, cpid);
     if (!pgm->privy.pgid) pgm->privy.pgid = cpid;
     setpgid(cpid, pgm->privy.pgid);
+    ft_log(FT_LOG_INFO, "(%d) %s <%d> restarted", pgm->privy.pgid,
+           pgm->usr.name, proc->pid);
     client_debug("restart: gpid:%d, pid:%d\n", getpgid(cpid), cpid);
 }
 
@@ -686,8 +697,10 @@ uint8_t run_client(t_tm_node *node) {
     ft_readline_add_completion(completion, cmd_nb);
 
     get_node(node);
-    auto_start(node);
 
+    ft_log(FT_LOG_INFO, "started");
+    atexit(log_exit);
+    auto_start(node);
     init_sigaction(&sigdfl_act, &sigchld_act);
     sigaction(SIGCHLD, &sigchld_act, NULL);
     while (!node->exit && (line = ft_readline("taskmaster$ ")) != NULL) {

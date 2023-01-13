@@ -8,6 +8,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#define TM_LOGFILE "./taskmaster.log"
+
 #define handle_error(msg) \
   do {                    \
     perror(msg);          \

@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 
+#include "ft_log.h"
 #include "taskmaster.h"
 #include "yaml.h"
 
@@ -518,6 +519,7 @@ uint8_t load_config_file(t_tm_node *node) {
       yaml_seq_e,   yaml_map_st,    yaml_map_e}; /* array of functions of type
                                                     YAML_HANDLER */
 
+  if (ft_openlog(node->tm_name, TM_LOGFILE)) handle_error("ft_openlog");
   yaml_parser_initialize(&parser);
   yaml_parser_set_input_file(&parser, node->config_file);
 
