@@ -18,7 +18,7 @@
  * logfile must be string literal */
 int ft_openlog(char *identity, const char *logfile);
 
-/* Logs at this format: <time><identity><level>:<user_format> to the file given
+/* Logs at this format: 'time identity level : user_format' to the file given
  * in ft_openlog() by the user or to <identity>.log.
  * Main API function. ft_log() can try to initialize itself but it is better
  * practice to call once ft_openlog() before.

@@ -107,10 +107,25 @@ typedef struct s_pgm {
   t_pgm_private privy;
 } t_pgm;
 
+typedef enum e_timer_ev {
+  NO_TIMER_EV,
+  TIMER_EV_START,
+  TIMER_EV_STOP,
+  MAX_TIMER_EV_NB,
+} t_timer_ev;
+
+typedef struct s_timer {
+  t_pgm *pgm;   /* pgm concerned by the timer */
+  time_t time;  /* time when the timer much trigger */
+  int32_t type; /* type of action to achieve (is it timing a start or a stop) */
+  struct s_timer *next;
+} t_timer;
+
 typedef struct s_tm_node {
   char *tm_name;     /* taskmaster name (argv[0]) */
   FILE *config_file; /* configuration file */
   t_pgm *head;       /* head of list of programs */
+  t_timer *timer_hd; /* head of list of timer  */
   uint32_t pgm_nb;   /* number of programs */
   pid_t shell_pgid;  /* shell pgid */
   int32_t exit;      /* exit taskmaster if true */

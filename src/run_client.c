@@ -3,7 +3,9 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #include "ft_log.h"
 #include "ft_readline.h"
@@ -29,8 +31,8 @@ void close_debugfile(void) {
 
 /* ================================= getters ================================ */
 
-/* initialize & record node in a static pointer at the first call
- * and get its address on subsequent calls */
+/* initialize & record node in a static pointer at the first call and get its
+ * address on subsequent calls. This avoid node to be a global variable */
 static t_tm_node *get_node(t_tm_node *node) {
     static bool init = false;
     static t_tm_node *my_node = NULL;
@@ -56,10 +58,10 @@ static void *destroy_str_array(char **array, uint32_t sz) {
 
 /* Add taskmaster commands and program names to completion */
 static char **get_completion(const t_tm_node *node, const t_tm_cmd *commands,
-                             uint32_t cmd_nb) {
+                             uint32_t compl_nb) {
     uint32_t i = 0;
     t_pgm *pgm = node->head;
-    char **completions = malloc(cmd_nb * sizeof(*completions));
+    char **completions = malloc(compl_nb * sizeof(*completions));
 
     if (!completions) return NULL;
 
@@ -68,7 +70,7 @@ static char **get_completion(const t_tm_node *node, const t_tm_cmd *commands,
         if (!completions[i]) return destroy_str_array(completions, i);
         i++;
     }
-    while (i < cmd_nb && pgm) {
+    while (i < compl_nb && pgm) {
         completions[i] = strdup(pgm->usr.name);
         if (!completions[i]) return destroy_str_array(completions, i);
         pgm = pgm->privy.next;
@@ -217,6 +219,175 @@ static int32_t process_proc(t_pgm *pgm, t_proc_handle handle, const void *arg) {
     return 0;
 }
 
+/* ============================= timer primitives =========================== */
+
+static void set_timer(t_timer *timer);
+
+static void delete_timer(t_timer *timer) {
+    t_tm_node *node = get_node(NULL);
+    t_timer *tmr = node->timer_hd, *last = NULL;
+
+    while (tmr && tmr != timer) {
+        last = tmr;
+        tmr = tmr->next;
+    }
+
+    if (!tmr) return;
+    if (last)
+        last->next = tmr->next;
+    else {
+        node->timer_hd = tmr->next;
+        set_timer(timer->next);
+    }
+    free(timer);
+}
+
+/* function triggered by the SIGALRM handler when timer is TIMER_EV_START.
+ * logs. */
+static void handle_timer_start(t_timer *timer) {
+    t_pgm *pgm = timer->pgm;
+    time_t elapsed = (pgm->usr.starttime / 1000) - (timer->time - time(NULL));
+
+    if (pgm->usr.numprocs == pgm->privy.proc_cnt &&
+        (elapsed >= (pgm->usr.starttime / 1000)))
+        ft_log(FT_LOG_INFO,
+               "(%d) %s successfully started. <%d/%d> seconds elapsed. "
+               "<%d/%d> "
+               "procs",
+               pgm->privy.pgid, pgm->usr.name, elapsed,
+               (pgm->usr.starttime / 1000), pgm->privy.proc_cnt,
+               pgm->usr.numprocs);
+    else
+        ft_log(FT_LOG_INFO,
+               "(%d) %s failed to start successfully. <%d/%d> seconds "
+               "elapsed. <%d/%d> "
+               "procs",
+               pgm->privy.pgid, pgm->usr.name, elapsed,
+               (pgm->usr.starttime / 1000), pgm->privy.proc_cnt,
+               pgm->usr.numprocs);
+}
+
+/* function triggered by the SIGALRM handler when timer is TIMER_EV_STOP.
+ * logs & eventually kill the pgm */
+static void handle_timer_stop(t_timer *timer) {
+    t_pgm *pgm = timer->pgm;
+    time_t elapsed = (pgm->usr.stoptime / 1000) - (timer->time - time(NULL));
+
+    if (!pgm->privy.proc_cnt) {
+        ft_log(FT_LOG_INFO,
+               "(%d) %s correctly terminated after <%d/%d> seconds elapsed. "
+               "<%d/%d> procs left",
+               pgm->privy.pgid, pgm->usr.name, elapsed,
+               (pgm->usr.stoptime / 1000), pgm->privy.proc_cnt,
+               pgm->usr.numprocs);
+    } else {
+        ft_log(FT_LOG_INFO,
+               "(%d) %s didn't terminated correctly after <%d/%d> seconds "
+               "elapsed. <%d/%d> procs left",
+               pgm->privy.pgid, pgm->usr.name, elapsed,
+               (pgm->usr.stoptime / 1000), pgm->privy.proc_cnt,
+               pgm->usr.numprocs);
+        kill(-(pgm->privy.pgid), SIGKILL);
+    }
+}
+
+static void set_timer(t_timer *timer) {
+    struct itimerval new = {0};
+    void (*cb[2])(t_timer *) = {handle_timer_start, handle_timer_stop};
+
+    if (!timer) {
+        /* if timer is NULL, disarm it */
+        if (setitimer(ITIMER_REAL, &new, NULL) == -1)
+            ft_log(FT_LOG_ERR, "setitimer() failed: %s", strerror(errno));
+        return;
+    }
+
+    new.it_value.tv_sec = timer->time - time(NULL);
+    client_debug("set_timer %s, sec: %ld\n", timer->pgm->usr.name,
+                 new.it_value.tv_sec);
+    if (new.it_value.tv_sec <= 0) {
+        /* if we already reached or exceeded the time, no need to set a timer
+         * and rather trigger immediately the needed function */
+        cb[timer->type - 1](timer->next);
+        delete_timer(timer);
+        return;
+    }
+    if (setitimer(ITIMER_REAL, &new, NULL) == -1)
+        ft_log(FT_LOG_ERR, "setitimer() failed: %s", strerror(errno));
+}
+
+/* return the first timer related to pgm encountered, or NULL */
+static t_timer *get_pgm_timer(t_pgm *pgm) {
+    t_tm_node *node = get_node(NULL);
+    t_timer *timer = node->timer_hd;
+
+    while (timer && timer->pgm != pgm) timer = timer->next;
+    return timer;
+}
+
+/* Search for a timer of pgm, of type 'type', execute its callback, delete it
+ * and set the next one if necessary */
+static void trigger_pgm_timer(t_pgm *pgm) {
+    t_tm_node *node = get_node(NULL);
+    t_timer *timer = node->timer_hd;
+    void (*cb[2])(t_timer *) = {handle_timer_start, handle_timer_stop};
+
+    /* TODO: block le signal ? */
+
+    while ((timer = get_pgm_timer(pgm))) {
+        cb[timer->type - 1](timer); /* execute timer cb before deletion */
+        delete_timer(timer);
+    }
+}
+
+/* trigger the right function according to the type of the 1st timer in
+ * the list */
+static void sigalrm_handler(int signb) {
+    UNUSED_PARAM(signb);
+    t_tm_node *node = get_node(NULL);
+    t_timer *tmr = node->timer_hd;
+    void (*cb[2])(t_timer *) = {handle_timer_start, handle_timer_stop};
+
+    if (!tmr) {
+        ft_log(FT_LOG_WARNING, "SIGALRM triggered but no timer left");
+        return;
+    }
+    cb[tmr->type - 1](tmr);
+    delete_timer(tmr);
+}
+
+/* add a timer link to the list and set the timer if it is in 1st position */
+static void add_timer(t_pgm *pgm, int32_t type) {
+    t_tm_node *node = get_node(NULL);
+    t_timer *tmr = node->timer_hd, *last = NULL,
+            *timer = malloc(1 * sizeof(*timer));
+
+    // TODO: bloquer le signal SIGALRM pour pas se faire ken ?
+    if (!timer) {
+        ft_log(FT_LOG_ERR, "malloc() failed: %s", strerror(errno));
+        return;
+    }
+    timer->pgm = pgm, timer->type = type, timer->next = NULL;
+    timer->time = time(NULL) + ((type == TIMER_EV_START ? pgm->usr.starttime
+                                                        : pgm->usr.stoptime) /
+                                1000);
+
+    /* find where to insert the new timer in the list */
+    while (tmr) {
+        if (tmr->time > timer->time) break;
+        last = tmr;
+        tmr = tmr->next;
+    }
+    /* insert the timer in the list */
+    if (last)
+        last->next = timer;
+    else
+        node->timer_hd = timer;
+    timer->next = tmr;
+
+    if (!last) set_timer(timer); /* The timer is in 1st pos so must be set */
+}
+
 /* ======================== client engine primitives ======================== */
 
 /* -------------------------- processus launching --------------------------- */
@@ -288,7 +459,6 @@ static void launch_new_proc(t_pgm *pgm) {
     pgm->privy.proc_cnt++;
     ft_log(FT_LOG_INFO, "(%d) %s <%d> started", pgm->privy.pgid, pgm->usr.name,
            pgm->privy.proc_head->pid);
-    client_debug("new: gpid:%d, pid:%d\n", getpgid(cpid), cpid);
 }
 
 /* ---------------------------- processus delete ---------------------------- */
@@ -297,8 +467,6 @@ static int32_t delete_proc(t_pgm *pgm, t_process *last,
                            t_process **current_proc) {
     t_process *current = *current_proc;
 
-    ft_log(FT_LOG_INFO, "(%d) %s <%d> terminated", pgm->privy.pgid,
-           pgm->usr.name, current->pid);
     if (last) {
         last->next = current->next;
         *current_proc = last;
@@ -327,7 +495,6 @@ static void restart_proc(t_pgm *pgm, t_process *proc) {
     setpgid(cpid, pgm->privy.pgid);
     ft_log(FT_LOG_INFO, "(%d) %s <%d> restarted", pgm->privy.pgid,
            pgm->usr.name, proc->pid);
-    client_debug("restart: gpid:%d, pid:%d\n", getpgid(cpid), cpid);
 }
 
 static int32_t proc_no_restart(t_pgm *pgm, t_process *proc) {
@@ -351,15 +518,21 @@ static int32_t update_process(t_pgm *pgm, const void *arg, t_process *last,
     client_debug("update_proc()\n");
     if (!current->updated) return 0;
     if (WIFEXITED(current->w_status)) {
-        client_debug("w exited\n");
+        ft_log(FT_LOG_INFO, "(%d) %s <%d> exited with status %d",
+               pgm->privy.pgid, pgm->usr.name, current->pid,
+               WEXITSTATUS(current->w_status));
         if (proc_no_restart(pgm, current)) {
             return delete_proc(pgm, last, current_proc);
         } else {
             restart_proc(pgm, current);
         }
     } else if (WIFSIGNALED(current->w_status)) {
-        client_debug("w signaled with %d\n", WTERMSIG(current->w_status));
-        return delete_proc(pgm, last, current_proc);
+        ft_log(FT_LOG_INFO, "(%d) %s <%d> terminated with signal %d",
+               pgm->privy.pgid, pgm->usr.name, current->pid,
+               WTERMSIG(current->w_status));
+        delete_proc(pgm, last, current_proc);
+        if (!pgm->privy.proc_cnt) trigger_pgm_timer(pgm);
+        return EXIT_SUCCESS;
     } else if (WIFSTOPPED(current->w_status)) {
         client_debug("w stopped\n");
     } else
@@ -390,7 +563,6 @@ static int32_t notify_process(t_pgm *pgm, const void *arg, t_process *last,
     } *args = arg;
 
     if (current->pid == args->pid) {
-        client_debug("flag_process() [%d]\n", args->pid);
         current->w_status = args->status;
         current->updated = true;
         pgm->privy.updated = true;
@@ -404,14 +576,13 @@ static int32_t wr_notify_process(t_pgm *pgm, const void *arg) {
     return process_proc(pgm, notify_process, arg);
 }
 
-/* finds which process has pid as pid and flags it (wr_flag_process) */
+/* finds which process has pid as pid and flags it (wr_notify_process) */
 static int32_t mark_process_status(t_tm_node *node, pid_t pid, int32_t status) {
     struct {
         pid_t pid;
         int32_t status;
     } arg = {pid, status};
 
-    client_debug("mark_process_status(), pid:%d\n", pid);
     if (pid > 0) {
         if (process_pgm(node->head, wr_notify_process, &arg)) return 0;
         fprintf(stderr, "No child process %d.\n", pid);
@@ -419,7 +590,6 @@ static int32_t mark_process_status(t_tm_node *node, pid_t pid, int32_t status) {
     } else if (pid == 0 || errno == ECHILD) /* No processes ready to report. */
         return -1;
     else { /* Other weird errors.  */
-        client_debug("error mark_process_status()");
         perror("waitpid");
         return -1;
     }
@@ -437,16 +607,18 @@ static void update_pgm_status(t_tm_node *node) {
 
 /* ====================== command handlers primitives ======================= */
 
-/* launch all not-yet-launched processes of a pgm */
+/* launch all not-yet-launched processes of a pgm  & add start timer */
 static void launch_pgm(t_pgm *pgm) {
     int32_t nb_new_proc = pgm->usr.numprocs - pgm->privy.proc_cnt;
 
     for (int32_t i = 0; i < nb_new_proc; i++) launch_new_proc(pgm);
+    add_timer(pgm, TIMER_EV_START);
 }
 
 static int32_t signal_stop_pgm(t_pgm *pgm) {
     if (!pgm->privy.proc_cnt) return 1;
     kill(-(pgm->privy.pgid), pgm->usr.stopsignal.nb);
+    add_timer(pgm, TIMER_EV_STOP);
     return 0;
 }
 
@@ -558,8 +730,7 @@ DECL_CMD_HANDLER(cmd_restart) {
 
     while ((pgm = get_pgm(node, &args))) {
         pgm->privy.ev = PGM_EV_RESTART;
-        if (!pgm->privy.proc_cnt) continue;
-        kill(-(pgm->privy.pgid), pgm->usr.stopsignal.nb);
+        signal_stop_pgm(pgm);
     }
     return EXIT_SUCCESS;
 }
@@ -603,6 +774,7 @@ DECL_CMD_HANDLER(cmd_help) {
 
 DECL_PGM_EV_HANDLER(no_ev) { UNUSED_PARAM(pgm); }
 
+/* launch pgm if all processus are down */
 DECL_PGM_EV_HANDLER(restart_ev) {
     if (pgm->privy.proc_cnt > 0) return;
     launch_pgm(pgm);
@@ -621,6 +793,7 @@ DECL_PGM_EV_HANDLER(exit_ev) {
     // event PGM_EV_EXIT est set.
 }
 
+/* wrapper to execute event callbacks */
 static int32_t handle_event(t_pgm *pgm, const void *arg) {
     UNUSED_PARAM(arg);
     void (*handler[PGM_MAX_EV])(t_pgm * pgm) = {no_ev, restart_ev, exit_ev};
@@ -659,17 +832,15 @@ static void auto_start(const t_tm_node *node) {
 }
 
 /* set sigaction structures for both default and child signals handling */
-static void init_sigaction(struct sigaction *sigdfl_act,
-                           struct sigaction *sigchld_act) {
+static void init_sigaction(struct sigaction *sigchld_dfl_act,
+                           struct sigaction *sigchld_handle_act,
+                           struct sigaction *sigalrm_handle_act) {
     sigset_t block_mask;
 
-    sigdfl_act->sa_handler = SIG_DFL;
-    sigdfl_act->sa_flags = 0;
-    sigemptyset(&(sigdfl_act->sa_mask));
+    sigchld_dfl_act->sa_handler = SIG_DFL;
+    sigchld_dfl_act->sa_flags = 0;
+    sigemptyset(&(sigchld_dfl_act->sa_mask));
 
-    sigchld_act->sa_handler = sigchild_handler;
-    /* if signal happen during a read(), restart it instead of fail it */
-    sigchld_act->sa_flags = SA_RESTART;
     sigemptyset(&block_mask);
     /* Block other terminal-generated signals while handler runs. */
     sigaddset(&block_mask, SIGINT);
@@ -677,14 +848,26 @@ static void init_sigaction(struct sigaction *sigdfl_act,
     sigaddset(&block_mask, SIGTSTP);
     sigaddset(&block_mask, SIGTTIN);
     sigaddset(&block_mask, SIGTTOU);
-    sigchld_act->sa_mask = block_mask;
+    /* block timer-generated signal while sigchld handler runs*/
+    sigaddset(&block_mask, SIGALRM);
+    sigchld_handle_act->sa_mask = block_mask;
+    sigchld_handle_act->sa_handler = sigchild_handler;
+    /* if signal happen during a read(), restart it instead of fail it */
+    sigchld_handle_act->sa_flags = SA_RESTART;
+
+    /* block child-generated signal while sigalrm handler runs*/
+    sigdelset(&block_mask, SIGALRM);
+    sigaddset(&block_mask, SIGCHLD);
+    sigalrm_handle_act->sa_mask = block_mask;
+    sigalrm_handle_act->sa_handler = sigalrm_handler;
+    sigalrm_handle_act->sa_flags = SA_RESTART;
 }
 
 /* Main client function. Reads, sanitize & execute client input */
 uint8_t run_client(t_tm_node *node) {
     char *line = NULL, **completion = NULL;
-    int32_t cmd_nb = TM_CMD_NB + node->pgm_nb, hdlr_type;
-    struct sigaction sigdfl_act, sigchld_act;
+    int32_t compl_nb = TM_CMD_NB + node->pgm_nb, hdlr_type;
+    struct sigaction sigchld_dfl_act, sigchld_handle_act, sigalrm_handle_act;
     t_tm_cmd command[TM_CMD_NB] = {{cmd_status, "status", FREE_NB_ARGS, 0},
                                    {cmd_start, "start", MANY_ARGS, 0},
                                    {cmd_stop, "stop", MANY_ARGS, 0},
@@ -693,18 +876,22 @@ uint8_t run_client(t_tm_node *node) {
                                    {cmd_exit, "exit", NO_ARGS, 0},
                                    {cmd_help, "help", NO_ARGS, 0}};
 
-    completion = get_completion(node, command, cmd_nb);
-    ft_readline_add_completion(completion, cmd_nb);
+    completion = get_completion(node, command, compl_nb);
+    ft_readline_add_completion(completion, compl_nb);
 
-    get_node(node);
-
+    get_node(node); /* init node getter */
     ft_log(FT_LOG_INFO, "started");
     atexit(log_exit);
+    init_sigaction(&sigchld_dfl_act, &sigchld_handle_act, &sigalrm_handle_act);
+    sigaction(SIGCHLD, &sigchld_handle_act, NULL);
+    sigaction(SIGALRM, &sigalrm_handle_act, NULL);
+
     auto_start(node);
-    init_sigaction(&sigdfl_act, &sigchld_act);
-    sigaction(SIGCHLD, &sigchld_act, NULL);
     while (!node->exit && (line = ft_readline("taskmaster$ ")) != NULL) {
-        sigaction(SIGCHLD, &sigdfl_act, NULL);
+        /* avoid reentrancy problems */
+        sigaction(SIGCHLD, &sigchld_dfl_act, NULL);
+        // TODO perhaps ign/dfl SIGALRM too an check timer queue at the end.
+
         ft_readline_add_history(line);
         format_user_input(line); /* maybe use this only to send to a client */
         hdlr_type = find_cmd(node, command, line);
@@ -716,7 +903,7 @@ uint8_t run_client(t_tm_node *node) {
         clean_command(command);
         free(line);
         pgm_notification(node);
-        sigaction(SIGCHLD, &sigchld_act, NULL);
+        sigaction(SIGCHLD, &sigchld_handle_act, NULL);
     }
     return EXIT_SUCCESS;
 }
