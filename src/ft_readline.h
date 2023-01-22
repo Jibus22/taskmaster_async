@@ -56,7 +56,16 @@ typedef struct readline_state {
 #define HISTORY_INC_ENTRY (1 * (history_entries < FT_READLINE_HISTORY_SZ))
 
 char *ft_readline(const char *prompt);
+
+/* ft_readline API function to add commands to completion engine.
+ * cmds must be dynamically allocated and not free by the user.
+ * Implemented as a circular buffer.
+ * returns 1 on error, 0 on success */
 int32_t ft_readline_add_completion(char **cmds, size_t nb);
+
+/* API function to add a new entry in the ft_readline history. This is
+ * implemented as a circular buffer. Does'nt add empty line, space-filled line
+ * or duplicate with previous row */
 uint32_t ft_readline_add_history(const char *line);
 
 #endif

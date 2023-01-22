@@ -51,6 +51,27 @@ static t_tm_node *get_newnode(t_tm_node *newnode, bool init) {
     return my_newnode;
 }
 
+DECL_CMD_HANDLER(cmd_status);
+DECL_CMD_HANDLER(cmd_start);
+DECL_CMD_HANDLER(cmd_stop);
+DECL_CMD_HANDLER(cmd_restart);
+DECL_CMD_HANDLER(cmd_reload);
+DECL_CMD_HANDLER(cmd_exit);
+DECL_CMD_HANDLER(cmd_help);
+
+/* returns address of taskmaster commands */
+static t_tm_cmd *get_commands() {
+    static t_tm_cmd command[TM_CMD_NB] = {
+        {cmd_status, "status", FREE_NB_ARGS, 0},
+        {cmd_start, "start", MANY_ARGS, 0},
+        {cmd_stop, "stop", MANY_ARGS, 0},
+        {cmd_restart, "restart", MANY_ARGS, 0},
+        {cmd_reload, "reload", NO_ARGS, 0},
+        {cmd_exit, "exit", NO_ARGS, 0},
+        {cmd_help, "help", NO_ARGS, 0}};
+    return command;
+}
+
 /* =============================== initialization =========================== */
 
 static void log_exit() { ft_log(FT_LOG_INFO, "exited"); }
@@ -78,12 +99,31 @@ static char **get_completion(const t_tm_node *node, const t_tm_cmd *commands,
         i++;
     }
     while (i < compl_nb && pgm) {
+        if (pgm->privy.ev == PGM_EV_DEL) {
+            pgm = pgm->privy.next;
+            continue;
+        }
         completions[i] = strdup(pgm->usr.name);
         if (!completions[i]) return destroy_str_array(completions, i);
         pgm = pgm->privy.next;
         i++;
     }
     return completions;
+}
+
+/* add or reload completions strings to ft_readline */
+static void add_cli_completion() {
+    char **completion = NULL;
+    t_tm_node *node = get_node(NULL);
+    t_tm_cmd *command = get_commands();
+    int32_t compl_nb = TM_CMD_NB + node->pgm_nb;
+
+    completion = get_completion(node, command, compl_nb);
+    if (!completion) goto error;
+    if (ft_readline_add_completion(completion, compl_nb)) goto error;
+    return;
+error:
+    ft_log(FT_LOG_ERR, "failed to add completion");
 }
 
 /* ========================== user input sanitizer ========================== */
@@ -460,7 +500,7 @@ static void add_timer(t_pgm *pgm, int32_t type) {
     if (!last) set_timer(timer); /* The timer is in 1st pos so must be set */
 }
 
-/* ======================== client engine primitives ======================== */
+/* =========================== client engine utils ========================== */
 
 /* -------------------------- processus launching --------------------------- */
 
@@ -965,9 +1005,11 @@ DECL_CMD_HANDLER(cmd_reload) {
     process_pgm(node->head, notify_removable_pgm, node_reload.head);
     process_pgm(node_reload.head, notify_new_pgm, node->head);
     process_pgm(node_reload.head, notify_reloadable_pgm, node->head);
-    destroy_taskmaster(&node_reload);
-
+    node->pgm_nb = node_reload.pgm_nb;
     get_newnode(NULL, true); /* reset newnode getter */
+
+    add_cli_completion();
+    destroy_taskmaster(&node_reload);
     return EXIT_SUCCESS;
 error:
     ft_log(FT_LOG_INFO, "failed to reload %s", node->config_file_name);
@@ -1119,24 +1161,18 @@ static void init_sigaction(struct sigaction *sigchld_dfl_act,
 
 /* Main client function. Reads, sanitize & execute client input */
 uint8_t run_client(t_tm_node *node) {
-    char *line = NULL, **completion = NULL;
-    int32_t compl_nb = TM_CMD_NB + node->pgm_nb, hdlr_type;
     struct sigaction sigchld_dfl_act, sigchld_handle_act, sigalrm_handle_act,
         sighup_handle_act;
-    t_tm_cmd command[TM_CMD_NB] = {{cmd_status, "status", FREE_NB_ARGS, 0},
-                                   {cmd_start, "start", MANY_ARGS, 0},
-                                   {cmd_stop, "stop", MANY_ARGS, 0},
-                                   {cmd_restart, "restart", MANY_ARGS, 0},
-                                   {cmd_reload, "reload", NO_ARGS, 0},
-                                   {cmd_exit, "exit", NO_ARGS, 0},
-                                   {cmd_help, "help", NO_ARGS, 0}};
-
-    completion = get_completion(node, command, compl_nb);
-    ft_readline_add_completion(completion, compl_nb);
+    t_tm_cmd *command = get_commands();
+    char *line = NULL;
+    int32_t hdlr_type;
 
     get_node(node); /* init node getter */
     ft_log(FT_LOG_INFO, "started");
     atexit(log_exit);
+
+    add_cli_completion();
+
     init_sigaction(&sigchld_dfl_act, &sigchld_handle_act, &sigalrm_handle_act,
                    &sighup_handle_act);
     sigaction(SIGCHLD, &sigchld_handle_act, NULL);

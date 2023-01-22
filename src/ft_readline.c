@@ -1,7 +1,7 @@
 /*
  * This non-canonical line reader does'nt uses termcap or terminfo database so
- * no additional library is linked to. In return this is only compatible with
- * terminal which understand VT100 sequences (the majority).
+ * no additional library is needed to link to. In return this is only
+ * compatible with terminal which understand VT100 sequences (the majority).
  * resources:
  * https://vt100.net/docs/vt100-ug/chapter3.html#CUF
  * https://www.gnu.org/software/libc/manual/html_node/Low_002dLevel-Terminal-Interface.html
@@ -57,9 +57,6 @@ static void destroy_history() {
   for (uint32_t i = 0; i < history_entries && history[i]; i++) free(history[i]);
 }
 
-/* API function to add a new entry in the ft_readline history. This is
- * implemented as a circular buffer. Does'nt add empty line, space-filled line
- * or duplicate with previous row */
 uint32_t ft_readline_add_history(const char *line) {
   int32_t i = 0;
   char *cpy;
@@ -378,6 +375,8 @@ static void complete(t_readline_state *rl, char *orig_buf, int32_t *word_start,
   }
 }
 
+/* function triggered by TAB keystroke. If completion is found, displays it on
+ * command line */
 static void rl_completion(t_readline_state *rl, circular_buf_it iterator) {
   static char orig_buf[FT_READLINE_MAX_LINE];
   static int32_t word_start, sz_cmp, word_end;
@@ -401,15 +400,9 @@ static void destroy_completion() {
   rl_compl = NULL;
 }
 
-/* ft_readline API function to add commands to completion engine.
- * Can be used only once. Copies cmds ptr into rl_compl.
- * cmds must be dynamically allocated and not free by the user.
- * Implemented as a circular buffer.
- * if success return 0, non-zero otherwise
- *
- * Should be improved later to sort the array */
 int32_t ft_readline_add_completion(char **cmds, size_t nb) {
-  if (rl_compl || !nb || !cmds) return EXIT_FAILURE;
+  if (!nb || !cmds) return EXIT_FAILURE;
+  if (rl_compl) destroy_completion();
   rl_compl_sz = nb;
   rl_compl = cmds;
   atexit(destroy_completion);
