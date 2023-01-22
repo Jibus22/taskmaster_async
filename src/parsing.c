@@ -5,7 +5,6 @@
 #include <signal.h>
 #include <sys/stat.h>
 
-#include "ft_log.h"
 #include "taskmaster.h"
 #include "yaml.h"
 
@@ -519,9 +518,8 @@ uint8_t load_config_file(t_tm_node *node) {
       yaml_seq_e,   yaml_map_st,    yaml_map_e}; /* array of functions of type
                                                     YAML_HANDLER */
 
-  if (ft_openlog(node->tm_name, TM_LOGFILE)) handle_error("ft_openlog");
   yaml_parser_initialize(&parser);
-  yaml_parser_set_input_file(&parser, node->config_file);
+  yaml_parser_set_input_file(&parser, node->config_file_stream);
 
   /* Read the event sequence. */
   while (!done) {
@@ -547,13 +545,14 @@ uint8_t load_config_file(t_tm_node *node) {
     yaml_event_delete(&event);
   }
 
+  fclose(node->config_file_stream);
+  node->config_file_stream = NULL;
   yaml_parser_delete(&parser);
   return EXIT_SUCCESS;
 
 error:
-  destroy_pgm_list(&node->head);
   yaml_parser_delete(&parser);
-  fclose(node->config_file);
+  destroy_taskmaster(node);
   return EXIT_FAILURE;
 }
 

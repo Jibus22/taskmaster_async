@@ -11,7 +11,7 @@ programs:
       - 2
     startretries: 3
     starttime: 2
-    stopsignal: TERM
+    stopsignal: SIGTERM
     stoptime: 5
     stdout: /tmp/alpha.stdout
     stderr: /tmp/alpha.stderr
@@ -28,13 +28,13 @@ programs:
     exitcodes: 0
     startretries: 2
     starttime: 1
-    stopsignal: USR1
+    stopsignal: SIGUSR1
     stoptime: 3
     stdout: /tmp/beta.stdout
     stderr: /tmp/beta.stderr
   daemon_DELTA:
     cmd: "/home/user42/42/taskmaster/test/daemons/daemon_DELTA bla1 bla2"
-    numprocs: 2
+    numprocs: 1
     umask: 077
     workingdir: /home/user42
     autostart: true
@@ -42,10 +42,10 @@ programs:
     exitcodes: 0
     startretries: 2
     starttime: 2
-    stopsignal: USR1
+    stopsignal: SIGUSR1
     stoptime: 4
-    stdout: /tmp/beta.stdout
-    stderr: /tmp/beta.stderr
+    stdout: /tmp/delta.stdout
+    stderr: /tmp/delta.stderr
   daemon_EPSILON:
     cmd: "/home/user42/42/taskmaster/test/daemons/daemon_EPSILON bla1 bla2"
     numprocs: 1
@@ -56,7 +56,7 @@ programs:
     exitcodes: 0
     startretries: 2
     starttime: 8
-    stopsignal: USR1
+    stopsignal: SIGUSR1
     stoptime: 2
     stdout: /tmp/beta.stdout
     stderr: /tmp/beta.stderr

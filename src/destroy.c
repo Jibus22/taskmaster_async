@@ -24,21 +24,25 @@ static void destroy_pgm_private_attributes(t_pgm_private *pgm) {
   bzero(pgm, sizeof(*pgm));
 }
 
-void destroy_pgm_list(t_pgm **head) {
+void destroy_pgm(t_pgm *pgm) {
+    destroy_pgm_user_attributes(&pgm->usr);
+    destroy_pgm_private_attributes(&pgm->privy);
+    free(pgm);
+}
+
+void destroy_pgm_list(t_pgm *head) {
   t_pgm *next;
 
-  while (*head) {
-    next = (*head)->privy.next;
-    destroy_pgm_user_attributes(&(*head)->usr);
-    destroy_pgm_private_attributes(&(*head)->privy);
-    DESTROY_PTR(*head);
-    *head = next;
+  while (head) {
+    next = head->privy.next;
+    destroy_pgm(head);
+    head = next;
   }
-  *head = NULL;
 }
 
 void destroy_taskmaster(t_tm_node *node) {
-  fclose(node->config_file);
-  destroy_pgm_list(&node->head);
+  if (node->config_file_stream) fclose(node->config_file_stream);
+  if (node->config_file_name) free(node->config_file_name);
+  destroy_pgm_list(node->head);
   bzero(node, sizeof(*node));
 }

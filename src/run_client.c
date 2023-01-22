@@ -44,6 +44,13 @@ static t_tm_node *get_node(t_tm_node *node) {
     return my_node;
 }
 
+static t_tm_node *get_newnode(t_tm_node *newnode, bool init) {
+    static t_tm_node *my_newnode = NULL;
+
+    if (init) my_newnode = newnode;
+    return my_newnode;
+}
+
 /* =============================== initialization =========================== */
 
 static void log_exit() { ft_log(FT_LOG_INFO, "exited"); }
@@ -192,13 +199,43 @@ static void format_user_input(char *line) {
 
 /* ============================== lists processors ========================== */
 
-typedef int32_t (*t_handle)(t_pgm *pgm, const void *arg);
+static void pgm_list_remove(t_tm_node *node, t_pgm *pgm) {
+    t_pgm *ptr = node->head, *last = NULL;
+
+    while (ptr && ptr != pgm) {
+        last = ptr;
+        ptr = ptr->privy.next;
+    }
+    if (!ptr) return;
+    if (last)
+        last->privy.next = ptr->privy.next;
+    else
+        node->head = ptr->privy.next;
+}
+
+/* insert pgm_new after pgm_pos */
+static void pgm_list_insert_after(t_pgm *pgm_pos, t_pgm *pgm_new) {
+    pgm_new->privy.next = pgm_pos->privy.next;
+    pgm_pos->privy.next = pgm_new;
+}
+
+static void pgm_list_add_front(t_tm_node *node, t_pgm *pgm) {
+    pgm->privy.next = node->head;
+    node->head = pgm;
+}
+
+typedef int32_t (*t_handle)(t_pgm *pgm, void *arg);
 
 /* to each pgm, execute handle callback. handle takes pgm and arg as argument */
-static int32_t process_pgm(t_pgm *pgm, t_handle handle, const void *arg) {
+static int32_t process_pgm(t_pgm *pgm, t_handle handle, void *arg) {
+    int32_t ret = 0;
+    t_pgm *next;
+
     while (pgm) {
-        if (handle(pgm, arg)) return 1;
-        pgm = pgm->privy.next;
+        next = pgm->privy.next;
+        ret = handle(pgm, arg);
+        if (ret) return ret;
+        pgm = next;
     }
     return 0;
 }
@@ -221,6 +258,32 @@ static int32_t process_proc(t_pgm *pgm, t_proc_handle handle, const void *arg) {
 
 /* ============================= timer primitives =========================== */
 
+static void block_sigalrm(sigset_t *old_sigset) {
+    sigset_t block_alarm;
+
+    sigemptyset(&block_alarm);
+    sigaddset(&block_alarm, SIGALRM);
+    sigprocmask(SIG_BLOCK, &block_alarm, old_sigset);
+}
+
+static void unblock_sigalrm(sigset_t *old_sigset) {
+    sigset_t block_alarm;
+
+    sigemptyset(&block_alarm);
+    sigaddset(&block_alarm, SIGALRM);
+    sigprocmask(SIG_UNBLOCK, &block_alarm, NULL);
+    sigprocmask(SIG_BLOCK, old_sigset, NULL);
+}
+
+/* wrapper to call a timer function inside blocking sigalrm guards */
+static void safe_timer_fn_call(t_pgm *pgm, int32_t type,
+                               void (*cb)(t_pgm *, int32_t)) {
+    sigset_t old_sigset;
+    block_sigalrm(&old_sigset);
+    cb(pgm, type);
+    unblock_sigalrm(&old_sigset);
+}
+
 static void set_timer(t_timer *timer);
 
 static void delete_timer(t_timer *timer) {
@@ -242,10 +305,22 @@ static void delete_timer(t_timer *timer) {
     free(timer);
 }
 
+/* take arg as t_proc_state type and apply it to *current->state */
+static int set_proc_state(t_pgm *pgm, const void *arg, t_process *last,
+                          t_process **current) {
+    UNUSED_PARAM(pgm);
+    UNUSED_PARAM(last);
+    t_process *proc = *current;
+    t_proc_state *state = (t_proc_state *)arg;
+    proc->state = *state;
+    return 0;
+}
+
 /* function triggered by the SIGALRM handler when timer is TIMER_EV_START.
  * logs. */
 static void handle_timer_start(t_timer *timer) {
     t_pgm *pgm = timer->pgm;
+    t_proc_state state = PROC_ST_RUNNING;
     time_t elapsed = (pgm->usr.starttime / 1000) - (timer->time - time(NULL));
 
     if (pgm->usr.numprocs == pgm->privy.proc_cnt &&
@@ -265,6 +340,7 @@ static void handle_timer_start(t_timer *timer) {
                pgm->privy.pgid, pgm->usr.name, elapsed,
                (pgm->usr.starttime / 1000), pgm->privy.proc_cnt,
                pgm->usr.numprocs);
+    process_proc(timer->pgm, set_proc_state, &state);
 }
 
 /* function triggered by the SIGALRM handler when timer is TIMER_EV_STOP.
@@ -303,12 +379,10 @@ static void set_timer(t_timer *timer) {
     }
 
     new.it_value.tv_sec = timer->time - time(NULL);
-    client_debug("set_timer %s, sec: %ld\n", timer->pgm->usr.name,
-                 new.it_value.tv_sec);
     if (new.it_value.tv_sec <= 0) {
         /* if we already reached or exceeded the time, no need to set a timer
          * and rather trigger immediately the needed function */
-        cb[timer->type - 1](timer->next);
+        cb[timer->type - 1](timer);
         delete_timer(timer);
         return;
     }
@@ -325,14 +399,13 @@ static t_timer *get_pgm_timer(t_pgm *pgm) {
     return timer;
 }
 
-/* Search for a timer of pgm, of type 'type', execute its callback, delete it
- * and set the next one if necessary */
-static void trigger_pgm_timer(t_pgm *pgm) {
+/* trigger every timers related to pgm. unused is to have a prototype compatible
+ * with safe_timer_fn_call() callback parameter. */
+static void trigger_pgm_timer(t_pgm *pgm, int32_t unused) {
+    UNUSED_PARAM(unused);
     t_tm_node *node = get_node(NULL);
     t_timer *timer = node->timer_hd;
     void (*cb[2])(t_timer *) = {handle_timer_start, handle_timer_stop};
-
-    /* TODO: block le signal ? */
 
     while ((timer = get_pgm_timer(pgm))) {
         cb[timer->type - 1](timer); /* execute timer cb before deletion */
@@ -359,10 +432,9 @@ static void sigalrm_handler(int signb) {
 /* add a timer link to the list and set the timer if it is in 1st position */
 static void add_timer(t_pgm *pgm, int32_t type) {
     t_tm_node *node = get_node(NULL);
-    t_timer *tmr = node->timer_hd, *last = NULL,
-            *timer = malloc(1 * sizeof(*timer));
+    t_timer *tmr = node->timer_hd, *last = NULL, *timer;
 
-    // TODO: bloquer le signal SIGALRM pour pas se faire ken ?
+    timer = malloc(1 * sizeof(*timer));
     if (!timer) {
         ft_log(FT_LOG_ERR, "malloc() failed: %s", strerror(errno));
         return;
@@ -411,7 +483,7 @@ static pid_t launch_proc(const t_pgm *pgm, pid_t pgid) {
     pid_t pid;
 
     pid = fork();
-    if (pid == -1) return -1;
+    if (pid == -1) handle_error("fork()");
     if (pid == 0) {
         pid = getpid();
         if (!pgid) pgid = pid;
@@ -444,6 +516,7 @@ static void add_new_proc(t_pgm *pgm, pid_t cpid) {
     new->next = pgm->privy.proc_head;
     pgm->privy.proc_head = new;
     new->pid = cpid;
+    new->state = PROC_ST_STARTING;
     new->restart_cnt++;
 }
 
@@ -485,7 +558,7 @@ static int32_t delete_proc(t_pgm *pgm, t_process *last,
 /* ---------------------------- processus update ---------------------------- */
 
 static void update_proc_data(t_process *proc, pid_t pid) {
-    proc->pid = pid, proc->restart_cnt++;
+    proc->pid = pid, proc->restart_cnt++, proc->state = PROC_ST_RUNNING;
 }
 
 static void restart_proc(t_pgm *pgm, t_process *proc) {
@@ -512,10 +585,9 @@ static int32_t proc_no_restart(t_pgm *pgm, t_process *proc) {
 /* remove, restart or notify proc according to new proc status */
 static int32_t update_process(t_pgm *pgm, const void *arg, t_process *last,
                               t_process **current_proc) {
-    UNUSED_PARAM(arg);
     t_process *current = *current_proc;
+    UNUSED_PARAM(arg);
 
-    client_debug("update_proc()\n");
     if (!current->updated) return 0;
     if (WIFEXITED(current->w_status)) {
         ft_log(FT_LOG_INFO, "(%d) %s <%d> exited with status %d",
@@ -531,19 +603,21 @@ static int32_t update_process(t_pgm *pgm, const void *arg, t_process *last,
                pgm->privy.pgid, pgm->usr.name, current->pid,
                WTERMSIG(current->w_status));
         delete_proc(pgm, last, current_proc);
-        if (!pgm->privy.proc_cnt) trigger_pgm_timer(pgm);
+        if (!pgm->privy.proc_cnt) safe_timer_fn_call(pgm, 0, trigger_pgm_timer);
         return EXIT_SUCCESS;
     } else if (WIFSTOPPED(current->w_status)) {
-        client_debug("w stopped\n");
+        ft_log(FT_LOG_INFO, "(%d) %s <%d> stopped with signal %d",
+               pgm->privy.pgid, pgm->usr.name, current->pid,
+               WSTOPSIG(current->w_status));
     } else
-        client_debug("wat signal update_proc() ?\n");
+        ft_log(FT_LOG_INFO, "wat signal update_proc() ?\n");
     current->updated = false;
     current->w_status = 0;
     return EXIT_SUCCESS;
 }
 
 /* wrapper to call process_proc() with update_proc() callback and logic around*/
-static int32_t update_proc_ctrl(t_pgm *pgm, const void *arg) {
+static int32_t update_proc_ctrl(t_pgm *pgm, void *arg) {
     if (!pgm->privy.updated) return 0;
     process_proc(pgm, update_process, arg);
     pgm->privy.updated = false;
@@ -572,7 +646,7 @@ static int32_t notify_process(t_pgm *pgm, const void *arg, t_process *last,
 }
 
 /* wrapper to call process_proc() with the relevant callback and logic around*/
-static int32_t wr_notify_process(t_pgm *pgm, const void *arg) {
+static int32_t wr_notify_process(t_pgm *pgm, void *arg) {
     return process_proc(pgm, notify_process, arg);
 }
 
@@ -607,18 +681,21 @@ static void update_pgm_status(t_tm_node *node) {
 
 /* ====================== command handlers primitives ======================= */
 
-/* launch all not-yet-launched processes of a pgm  & add start timer */
+/* launch all not-yet-launched processes of a pgm & add start timer */
 static void launch_pgm(t_pgm *pgm) {
     int32_t nb_new_proc = pgm->usr.numprocs - pgm->privy.proc_cnt;
 
     for (int32_t i = 0; i < nb_new_proc; i++) launch_new_proc(pgm);
-    add_timer(pgm, TIMER_EV_START);
+    safe_timer_fn_call(pgm, TIMER_EV_START, add_timer);
 }
 
 static int32_t signal_stop_pgm(t_pgm *pgm) {
+    t_proc_state state = PROC_ST_TERMINATING;
+
     if (!pgm->privy.proc_cnt) return 1;
     kill(-(pgm->privy.pgid), pgm->usr.stopsignal.nb);
-    add_timer(pgm, TIMER_EV_STOP);
+    process_proc(pgm, set_proc_state, &state);
+    safe_timer_fn_call(pgm, TIMER_EV_STOP, add_timer);
     return 0;
 }
 
@@ -637,7 +714,7 @@ static int32_t wait_one_pgm(t_pgm *pgm, const void *arg, t_process *last,
 }
 
 /* end the pgm and wait it */
-static int32_t exit_pgm(t_pgm *pgm, const void *arg) {
+static int32_t exit_pgm(t_pgm *pgm, void *arg) {
     UNUSED_PARAM(arg);
     if (signal_stop_pgm(pgm)) return 0;
     process_proc(pgm, wait_one_pgm, NULL);
@@ -645,18 +722,152 @@ static int32_t exit_pgm(t_pgm *pgm, const void *arg) {
     return 0;
 }
 
-static int32_t status_pgm(t_pgm *pgm, const void *arg) {
+static int32_t status_pgm(t_pgm *pgm, void *arg) {
     UNUSED_PARAM(arg);
-    printf("- [%d] %s: <%d/%d> running\n", pgm->privy.pgid, pgm->usr.name,
+    printf("- [%d] %s: <%d/%d> started\n", pgm->privy.pgid, pgm->usr.name,
            pgm->privy.proc_cnt, pgm->usr.numprocs);
     return EXIT_SUCCESS;
 }
 
 static void status_proc(t_pgm *pgm) {
+    char proc_st[PROC_ST_MAX][16] = {"starting", "running", "terminating"};
     status_pgm(pgm, NULL);
     for (t_process *proc = pgm->privy.proc_head; proc; proc = proc->next)
-        printf("pid <%d> - restarted <%d/%d> times\n", proc->pid,
-               proc->restart_cnt, pgm->usr.startretries);
+        printf("pid <%d> - %s - restarted <%d/%d> times\n", proc->pid,
+               proc_st[proc->state], proc->restart_cnt - 1,
+               pgm->usr.startretries);
+}
+
+/* --------------------------------- reload --------------------------------- */
+
+static int32_t tm_strcmp(const char *s1, const char *s2) {
+    const unsigned char *s1_cp = (const unsigned char *)s1;
+    const unsigned char *s2_cp = (const unsigned char *)s2;
+    uint8_t diff;
+
+    if (!s1_cp && !s2_cp) return EXIT_SUCCESS;
+    if (!s1_cp || !s2_cp) return EXIT_FAILURE;
+    diff = (*s1_cp != *s2_cp);
+    while (*s1_cp && *s2_cp && !diff) {
+        s1_cp++;
+        s2_cp++;
+        diff = (*s1_cp != *s2_cp);
+    }
+    return (*s1_cp - *s2_cp);
+}
+
+/* just compare two programs names. Returns 1 if they have the same name */
+static int32_t find_same_pgm(t_pgm *pgm, void *arg) {
+    return (tm_strcmp(pgm->usr.name, ((t_pgm *)arg)->usr.name) == 0);
+}
+
+/* looks for pgm into arg list, notify pgm to be deleted if not found */
+static int32_t notify_removable_pgm(t_pgm *pgm, void *arg) {
+    if (!process_pgm((t_pgm *)arg, find_same_pgm, pgm)) {
+        ft_log(FT_LOG_DEBUG, "pgm %s - del", pgm->usr.name);
+        pgm->privy.ev = PGM_EV_DEL;
+    }
+    return 0;
+}
+
+/* looks for new_pgm into main list (arg), notify new_pgm to be added if
+ * not found & switch it from lists */
+static int32_t notify_new_pgm(t_pgm *new_pgm, void *arg) {
+    t_tm_node *newnode = get_newnode(NULL, false), *node = get_node(NULL);
+
+    if (!process_pgm((t_pgm *)arg, find_same_pgm, new_pgm)) {
+        ft_log(FT_LOG_DEBUG, "pgm %s - add", new_pgm->usr.name);
+        new_pgm->privy.ev = PGM_EV_ADD;
+        pgm_list_remove(newnode, new_pgm);
+        pgm_list_add_front(node, new_pgm);
+    }
+    return 0;
+}
+
+static int32_t str_array_cmp(char *const *arr1, char *const *arr2) {
+    int32_t i = 0;
+
+    while (arr1[i] && arr2[i] && !tm_strcmp(arr1[i], arr2[i])) i++;
+    return !(!arr1[i] && !arr2[i]);
+}
+
+#define CLIENT_SOFT_RELOAD 1
+#define CLIENT_HARD_RELOAD 2
+
+/* compares two pgm with the same name and returns a status code according to
+ * the differences between them. */
+static uint8_t pgm_compare(t_pgm *p1, t_pgm *p2) {
+    if (tm_strcmp((char *)p1->usr.name, (char *)p2->usr.name)) return 0;
+    bool soft_reload = (p1->usr.autostart != p2->usr.autostart ||
+                        p1->usr.autorestart != p2->usr.autorestart ||
+                        p1->usr.starttime != p2->usr.starttime ||
+                        p1->usr.startretries != p2->usr.startretries ||
+                        p1->usr.stopsignal.nb != p2->usr.stopsignal.nb ||
+                        p1->usr.stoptime != p2->usr.stoptime);
+    bool hard_reload =
+        (str_array_cmp(p1->usr.cmd, p2->usr.cmd) ||
+         p1->usr.numprocs != p2->usr.numprocs ||
+         p1->usr.exitcodes.array_size != p2->usr.exitcodes.array_size ||
+         tm_strcmp((char *)p1->usr.std_out, (char *)p2->usr.std_out) ||
+         tm_strcmp((char *)p1->usr.std_err, (char *)p2->usr.std_err) ||
+         p1->usr.env.array_size != p2->usr.env.array_size ||
+         tm_strcmp((char *)p1->usr.workingdir, (char *)p2->usr.workingdir) ||
+         p1->usr.umask != p2->usr.umask);
+
+    for (uint32_t cnt = 0; cnt < p1->usr.env.array_size && !hard_reload; cnt++)
+        if (tm_strcmp((char *)p1->usr.env.array_val[cnt],
+                      (char *)p2->usr.env.array_val[cnt]) != 0)
+            hard_reload = true;
+
+    for (uint32_t cnt = 0; cnt < p1->usr.exitcodes.array_size && !hard_reload;
+         cnt++)
+        if (p1->usr.exitcodes.array_val[cnt] !=
+            p2->usr.exitcodes.array_val[cnt])
+            soft_reload = true;
+
+    return ((hard_reload * CLIENT_HARD_RELOAD) +
+            ((soft_reload && !hard_reload) * CLIENT_SOFT_RELOAD));
+}
+
+/* copies all values from pgm_new to pgm, which don't need a restart of pgm */
+static int32_t pgm_soft_cpy(t_pgm *pgm, t_pgm *pgm_new) {
+    pgm->usr.autostart = pgm_new->usr.autostart;
+    pgm->usr.autorestart = pgm_new->usr.autorestart;
+    pgm->usr.starttime = pgm_new->usr.starttime;
+    pgm->usr.startretries = pgm_new->usr.startretries;
+    pgm->usr.stopsignal = pgm_new->usr.stopsignal;
+    pgm->usr.stoptime = pgm_new->usr.stoptime;
+    for (uint32_t i = 0; i < pgm->usr.exitcodes.array_size; i++)
+        pgm->usr.exitcodes.array_val[i] = pgm_new->usr.exitcodes.array_val[i];
+    return EXIT_SUCCESS;
+}
+
+/* finds if the two pgm beeing compared are the same (same name) but have few
+ * changes in the configuration which justify either a soft or hard reload, and
+ * notify &/| accordingly */
+static int32_t find_reloadable_pgm(t_pgm *pgm, void *arg) {
+    t_tm_node *newnode = get_newnode(NULL, false);
+    t_pgm *pgm_new = (t_pgm *)arg;
+    int32_t ret = 0;
+
+    ret = pgm_compare(pgm, pgm_new);
+    if (ret == CLIENT_SOFT_RELOAD) {
+        ft_log(FT_LOG_DEBUG, "%s soft reload", pgm->usr.name);
+        pgm_soft_cpy(pgm, pgm_new);
+    } else if (ret == CLIENT_HARD_RELOAD) {
+        ft_log(FT_LOG_DEBUG, "%s hard reload", pgm->usr.name);
+        pgm->privy.ev = PGM_EV_DEL;
+        pgm_new->privy.ev = PGM_EV_ADD;
+        pgm_list_remove(newnode, pgm_new);
+        pgm_list_insert_after(pgm, pgm_new);
+    }
+    return ret;
+}
+
+/* applies find_reloadable_pgm() to the main list (arg) against pgm_new */
+static int32_t notify_reloadable_pgm(t_pgm *pgm_new, void *arg) {
+    process_pgm((t_pgm *)arg, find_reloadable_pgm, pgm_new);
+    return 0;
 }
 
 /* ========================= command handlers utils ========================= */
@@ -672,7 +883,7 @@ static char *get_next_word(const char *str) {
     return (char *)(str + i);
 }
 
-/* Compare pgm names with the current argument and returns the corresponding
+/* compare pgm names with the current argument and returns the corresponding
  * pgm adress if it match */
 static t_pgm *get_pgm(const t_tm_node *node, char **args) {
     if (!*args) return NULL;
@@ -737,10 +948,30 @@ DECL_CMD_HANDLER(cmd_restart) {
 
 /* reload config has 0 argument */
 DECL_CMD_HANDLER(cmd_reload) {
-    UNUSED_PARAM(node);
-    t_tm_cmd *cmd = command;
-    printf("commands: |%s|\n", cmd->name);
+    UNUSED_PARAM(command);
+    t_tm_node node_reload = {.tm_name = node->tm_name, 0};
+
+    if (!(node_reload.config_file_stream =
+              fopen(node->config_file_name, "r"))) {
+        fprintf(stderr, "%s: %s: %s\n", node_reload.tm_name,
+                node->config_file_name, strerror(errno));
+        goto error;
+    }
+    if (load_config_file(&node_reload)) goto error;
+    if (sanitize_config(&node_reload)) goto error;
+    if (fulfill_config(&node_reload)) goto error;
+
+    get_newnode(&node_reload, true); /* init newnode getter */
+    process_pgm(node->head, notify_removable_pgm, node_reload.head);
+    process_pgm(node_reload.head, notify_new_pgm, node->head);
+    process_pgm(node_reload.head, notify_reloadable_pgm, node->head);
+    destroy_taskmaster(&node_reload);
+
+    get_newnode(NULL, true); /* reset newnode getter */
     return EXIT_SUCCESS;
+error:
+    ft_log(FT_LOG_INFO, "failed to reload %s", node->config_file_name);
+    return EXIT_FAILURE;
 }
 
 /* exit has 0 argument */
@@ -759,6 +990,7 @@ DECL_CMD_HANDLER(cmd_help) {
         "start <name>\t\tStart processes\n"
         "stop <name>\t\tStop processes\n"
         "restart <name>\t\tRestart all processes\n"
+        "reload\t\tReload the configuration file\n"
         "status <name>\t\tGet status for <name> processes\n"
         "status\t\tGet status for all programs\n"
         "exit\t\tExit the taskmaster shell and server.\n",
@@ -781,22 +1013,24 @@ DECL_PGM_EV_HANDLER(restart_ev) {
     pgm->privy.ev = PGM_NO_EV;
 }
 
-DECL_PGM_EV_HANDLER(exit_ev) {
-    UNUSED_PARAM(pgm);
-    // Si je choisis ce design pour exit() ce serait pour la simple raison de
-    // ne pas bloquer le shell pendant que ça exit, parce que le handler
-    // cmd_exit() aurait juste stop tlm et ici dans cet event handler on aurait
-    // juste à checker si proc_cnt == 0 pour enclencher la suite de la logique
-    // qui est: long_jump en dehors de la boucle dans le run_client(), pour
-    // sortir.
-    // Il faudrait cependant bien prendre la précaution de ne jamais reset un
-    // event PGM_EV_EXIT est set.
+DECL_PGM_EV_HANDLER(add_ev) {
+    if (pgm->privy.proc_cnt > 0 || !pgm->usr.autostart) return;
+    launch_pgm(pgm);
+    pgm->privy.ev = PGM_NO_EV;
+}
+
+DECL_PGM_EV_HANDLER(del_ev) {
+    t_tm_node *node = get_node(NULL);
+    exit_pgm(pgm, NULL);
+    pgm_list_remove(node, pgm);
+    destroy_pgm(pgm);
 }
 
 /* wrapper to execute event callbacks */
-static int32_t handle_event(t_pgm *pgm, const void *arg) {
+static int32_t handle_event(t_pgm *pgm, void *arg) {
     UNUSED_PARAM(arg);
-    void (*handler[PGM_MAX_EV])(t_pgm * pgm) = {no_ev, restart_ev, exit_ev};
+    void (*handler[PGM_MAX_EV])(t_pgm * pgm) = {no_ev, restart_ev, add_ev,
+                                                del_ev};
 
     handler[pgm->privy.ev](pgm);
     return EXIT_SUCCESS;
@@ -811,6 +1045,15 @@ static void pgm_notification(t_tm_node *node) {
     process_pgm(node->head, handle_event, NULL);
 }
 
+static void sighup_handler(int signb) {
+    UNUSED_PARAM(signb);
+    t_tm_node *node = get_node(NULL);
+
+    ft_log(FT_LOG_DEBUG, "SIGHUP received");
+    cmd_reload(node, NULL);
+    process_pgm(node->head, handle_event, NULL);
+}
+
 static void sigchild_handler(int signb) {
     UNUSED_PARAM(signb);
     pgm_notification(get_node(NULL));
@@ -821,7 +1064,7 @@ static inline void clean_command(t_tm_cmd *command) {
     for (int32_t i = 0; i < TM_CMD_NB; i++) command[i].args = NULL;
 }
 
-static int32_t init_launch_pgm(t_pgm *pgm, const void *arg) {
+static int32_t init_launch_pgm(t_pgm *pgm, void *arg) {
     UNUSED_PARAM(arg);
     if (pgm->usr.autostart) launch_pgm(pgm);
     return EXIT_SUCCESS;
@@ -834,13 +1077,16 @@ static void auto_start(const t_tm_node *node) {
 /* set sigaction structures for both default and child signals handling */
 static void init_sigaction(struct sigaction *sigchld_dfl_act,
                            struct sigaction *sigchld_handle_act,
-                           struct sigaction *sigalrm_handle_act) {
+                           struct sigaction *sigalrm_handle_act,
+                           struct sigaction *sighup_handle_act) {
     sigset_t block_mask;
 
+    /* sigchld_dfl_act */
     sigchld_dfl_act->sa_handler = SIG_DFL;
     sigchld_dfl_act->sa_flags = 0;
     sigemptyset(&(sigchld_dfl_act->sa_mask));
 
+    /* sigchld_handle_act */
     sigemptyset(&block_mask);
     /* Block other terminal-generated signals while handler runs. */
     sigaddset(&block_mask, SIGINT);
@@ -848,6 +1094,7 @@ static void init_sigaction(struct sigaction *sigchld_dfl_act,
     sigaddset(&block_mask, SIGTSTP);
     sigaddset(&block_mask, SIGTTIN);
     sigaddset(&block_mask, SIGTTOU);
+    sigaddset(&block_mask, SIGHUP);
     /* block timer-generated signal while sigchld handler runs*/
     sigaddset(&block_mask, SIGALRM);
     sigchld_handle_act->sa_mask = block_mask;
@@ -855,19 +1102,27 @@ static void init_sigaction(struct sigaction *sigchld_dfl_act,
     /* if signal happen during a read(), restart it instead of fail it */
     sigchld_handle_act->sa_flags = SA_RESTART;
 
-    /* block child-generated signal while sigalrm handler runs*/
+    /* sigalrm_handle_act */
+    /* block child-generated signal while sigalrm handler runs */
     sigdelset(&block_mask, SIGALRM);
     sigaddset(&block_mask, SIGCHLD);
     sigalrm_handle_act->sa_mask = block_mask;
     sigalrm_handle_act->sa_handler = sigalrm_handler;
     sigalrm_handle_act->sa_flags = SA_RESTART;
+
+    /* sigalrm_handle_act */
+    sigaddset(&block_mask, SIGALRM);
+    sighup_handle_act->sa_mask = block_mask;
+    sighup_handle_act->sa_handler = sighup_handler;
+    sighup_handle_act->sa_flags = SA_RESTART;
 }
 
 /* Main client function. Reads, sanitize & execute client input */
 uint8_t run_client(t_tm_node *node) {
     char *line = NULL, **completion = NULL;
     int32_t compl_nb = TM_CMD_NB + node->pgm_nb, hdlr_type;
-    struct sigaction sigchld_dfl_act, sigchld_handle_act, sigalrm_handle_act;
+    struct sigaction sigchld_dfl_act, sigchld_handle_act, sigalrm_handle_act,
+        sighup_handle_act;
     t_tm_cmd command[TM_CMD_NB] = {{cmd_status, "status", FREE_NB_ARGS, 0},
                                    {cmd_start, "start", MANY_ARGS, 0},
                                    {cmd_stop, "stop", MANY_ARGS, 0},
@@ -882,9 +1137,11 @@ uint8_t run_client(t_tm_node *node) {
     get_node(node); /* init node getter */
     ft_log(FT_LOG_INFO, "started");
     atexit(log_exit);
-    init_sigaction(&sigchld_dfl_act, &sigchld_handle_act, &sigalrm_handle_act);
+    init_sigaction(&sigchld_dfl_act, &sigchld_handle_act, &sigalrm_handle_act,
+                   &sighup_handle_act);
     sigaction(SIGCHLD, &sigchld_handle_act, NULL);
     sigaction(SIGALRM, &sigalrm_handle_act, NULL);
+    sigaction(SIGHUP, &sighup_handle_act, NULL);
 
     auto_start(node);
     while (!node->exit && (line = ft_readline("taskmaster$ ")) != NULL) {

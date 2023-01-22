@@ -72,10 +72,18 @@ typedef struct s_pgm_usr {
                               killed. in ms*/
 } t_pgm_usr;
 
+typedef enum e_proc_state {
+  PROC_ST_STARTING,
+  PROC_ST_RUNNING,
+  PROC_ST_TERMINATING,
+  PROC_ST_MAX,
+} t_proc_state;
+
 typedef struct s_process {
   pid_t pid;           /* processus pid */
   int32_t restart_cnt; /* how many times the processus restarted */
   int32_t w_status;    /* waitpid() status of processus */
+  t_proc_state state;  /* state of processus*/
   int32_t updated; /* flag to notify wether the proc has been updated or not */
   struct s_process *next;
 } t_process;
@@ -83,7 +91,8 @@ typedef struct s_process {
 typedef enum e_pgm_event {
   PGM_NO_EV,
   PGM_EV_RESTART,
-  PGM_EV_EXIT,
+  PGM_EV_ADD,
+  PGM_EV_DEL,
   PGM_MAX_EV,
 } t_pgm_event;
 
@@ -122,13 +131,14 @@ typedef struct s_timer {
 } t_timer;
 
 typedef struct s_tm_node {
-  char *tm_name;     /* taskmaster name (argv[0]) */
-  FILE *config_file; /* configuration file */
-  t_pgm *head;       /* head of list of programs */
-  t_timer *timer_hd; /* head of list of timer  */
-  uint32_t pgm_nb;   /* number of programs */
-  pid_t shell_pgid;  /* shell pgid */
-  int32_t exit;      /* exit taskmaster if true */
+  char *tm_name;            /* taskmaster name (argv[0]) */
+  char *config_file_name;   /* configuration file name */
+  FILE *config_file_stream; /* configuration file stream */
+  t_pgm *head;              /* head of list of programs */
+  t_timer *timer_hd;        /* head of list of timer  */
+  uint32_t pgm_nb;          /* number of programs */
+  pid_t shell_pgid;         /* shell pgid */
+  int32_t exit;             /* exit taskmaster if true */
 } t_tm_node;
 
 /* parsing.c */
@@ -143,7 +153,8 @@ uint8_t run_client(t_tm_node *node);
 void print_pgm_list(t_pgm *pgm);
 
 /* destroy.c */
-void destroy_pgm_list(t_pgm **head);
+void destroy_pgm(t_pgm *pgm);
+void destroy_pgm_list(t_pgm *head);
 void destroy_taskmaster(t_tm_node *node);
 
 #endif

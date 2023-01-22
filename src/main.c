@@ -2,6 +2,7 @@
 #include <signal.h>
 #include <termio.h>
 
+#include "ft_log.h"
 #include "taskmaster.h"
 
 static uint8_t usage(char *const *av) {
@@ -15,7 +16,9 @@ static uint8_t get_options(int ac, char *const *av, t_tm_node *node) {
   while ((opt = getopt(ac, av, "f:")) != -1) {
     switch (opt) {
       case 'f':
-        if (!(node->config_file = fopen(optarg, "r"))) {
+        node->config_file_name = strdup(optarg);
+        if (!node->config_file_name) handle_error("strdup");
+        if (!(node->config_file_stream = fopen(optarg, "r"))) {
           fprintf(stderr, "%s: %s: %s\n", av[0], optarg, strerror(errno));
           return EXIT_FAILURE;
         }
@@ -80,7 +83,8 @@ error:
 int main(int ac, char **av) {
   t_tm_node node = {.tm_name = av[0], 0};
 
-  if (get_options(ac, av, &node)) return EXIT_FAILURE;
+  if (get_options(ac, av, &node)) goto error;
+  if (ft_openlog(node.tm_name, TM_LOGFILE)) goto_error("ft_openlog");
   if (load_config_file(&node)) return EXIT_FAILURE;
   if (sanitize_config(&node)) return EXIT_FAILURE;
   if (fulfill_config(&node)) return EXIT_FAILURE;
@@ -89,4 +93,7 @@ int main(int ac, char **av) {
   print_pgm_list(node.head);
   destroy_taskmaster(&node);
   return EXIT_SUCCESS;
+error:
+  destroy_taskmaster(&node);
+  return EXIT_FAILURE;
 }
