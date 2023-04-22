@@ -225,15 +225,18 @@ $
 ### data structure
 
 _programs properties and processes ids & status are tracked through this data structure_
+
 <img src="./_resources/taskmaster_main_memory_structure.jpg" alt="taskmaster_main_memory_structure.jpg" width="429" height="492">
 
 ### activity overview
 
 _here is a basic overview of taskmaster main logic_
+
 <img src="./_resources/Taskmaster_activity_overview.jpg" alt="Taskmaster_activity_overview.jpg" width="368" height="828">
 
 ### timer logic
 
 _processes start & stop can be timed to act consequently and give a log back. Here is a basic logic overview diagram_
+
 <img src="./_resources/Taskmaster_timer_logic.jpg" alt="Taskmaster_timer_logic.jpg" width="691" height="365">
 
